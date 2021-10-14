@@ -7,10 +7,12 @@ import Data.Either (isLeft)
 import Data.List (intercalate)
 import Text.Printf (printf)
 
+import System.Random
+
 import Graphics.Vty
 
 newtype Str = Str Int -- 0 = E string
-  deriving (Eq, Ord, Num, Enum)
+  deriving (Eq, Ord, Num, Enum, Random)
 
 strOffset :: Str -> Note
 strOffset (Str 0) = 0
@@ -21,7 +23,7 @@ strOffset (Str 4) = 5
 strOffset (Str 5) = 0
 
 newtype Note = Note Int -- 0 = E on 1st string
-  deriving (Eq, Ord, Num, Enum)
+  deriving (Eq, Ord, Num, Enum, Random)
 
 showNote :: Note -> Either String (String, String)
 showNote (Note 0)  = Left "E"
@@ -104,17 +106,30 @@ fretImageForMark s n = fretImage
   | str <- [0..5]
   ]
 
+rndNotes :: Vty -> IO ()
+rndNotes vty = do
+  str <- randomRIO (0, 5)
+  n   <- randomRIO (1, 12)
+  update vty $ picForImage $ fretImageForMark str n
+  e <- nextEvent vty
+  if e == EvKey (KChar ' ') []
+    then pure ()
+    else do
+      update vty $ picForImage $ string defAttr $ case showNote (strOffset str + n) of
+        Left n -> n
+        Right (x, y) -> x <> "/" <> y
+
+      e <- nextEvent vty
+      if e == EvKey (KChar ' ') []
+        then pure ()
+        else rndNotes vty
+
 main :: IO ()
 main = do
-    let cfg = defaultConfig
-         { mouseMode = Just True
-         }
-    vty <- mkVty cfg
-    -- let line0 = string (defAttr ` withForeColor ` green) "first line2\nblbla"
-    --     line1 = string (defAttr ` withBackColor ` blue) "second line"
-    --     img = line0 <-> line1
-    --     pic = picForImage img
-    update vty $ picForImage $ fretImageForMark 0 8
-    e <- nextEvent vty
-    shutdown vty
-    print ("Last event was: " ++ show e)
+  let cfg = defaultConfig
+       { mouseMode = Just True
+       }
+  vty <- mkVty cfg
+  rndNotes vty
+  shutdown vty
+    

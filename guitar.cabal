@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: d0913fc2871e5f507fe8fca1bc28e1b528dc9437b61d38559de9a481254cabaf
+-- hash: 8febb0c198842e76f65eb6223cafdbf2f115522f6028f6c1d528f10bdcf0da2b
 
 name:           guitar
 version:        0.1.0.0
@@ -34,7 +34,7 @@ library
       src
   build-depends:
       base >=4.7 && <5
-    , terminal
+    , random
     , vty
   default-language: Haskell2010
 
@@ -48,7 +48,7 @@ executable guitar-exe
   build-depends:
       base >=4.7 && <5
     , guitar
-    , terminal
+    , random
     , vty
   default-language: Haskell2010
 
@@ -63,6 +63,6 @@ test-suite guitar-test
   build-depends:
       base >=4.7 && <5
     , guitar
-    , terminal
+    , random
     , vty
   default-language: Haskell2010
