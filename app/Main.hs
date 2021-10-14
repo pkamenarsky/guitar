@@ -3,6 +3,7 @@
 
 module Main where
 
+import Data.Either (isLeft)
 import Data.List (intercalate)
 import Text.Printf (printf)
 
@@ -37,20 +38,23 @@ instance Show Note where
   show (Note 11) = "D#/Eb"
   show (Note x) = show $ Note (x `mod` 12)
 
+showNote :: Note -> Either String (String, String)
+showNote (Note 0)  = Left "E"
+showNote (Note 1)  = Left "F"
+showNote (Note 2)  = Right ("F#", "Gb")
+showNote (Note 3)  = Left "G"
+showNote (Note 4)  = Right ("G#", "Ab")
+showNote (Note 5)  = Left "A"
+showNote (Note 6)  = Right ("A#", "Bb")
+showNote (Note 7)  = Left "B"
+showNote (Note 8)  = Left "C"
+showNote (Note 9)  = Right ("C#", "Db")
+showNote (Note 10) = Left "D"
+showNote (Note 11) = Right ("D#", "Eb")
+showNote (Note x)  = showNote $ Note (x `mod` 12)
+
 isWhole :: Note -> Bool
-isWhole (Note 0) = True
-isWhole (Note 1) = True
-isWhole (Note 2) = False
-isWhole (Note 3) = True
-isWhole (Note 4) = False
-isWhole (Note 5) = True
-isWhole (Note 6) = False
-isWhole (Note 7) = True
-isWhole (Note 8) = True
-isWhole (Note 9) = False
-isWhole (Note 10) = True
-isWhole (Note 11) = False
-isWhole (Note x) = isWhole $ Note (x `mod` 12)
+isWhole = isLeft . showNote
 
 data StrPrefix = Colon | Arrow
 data StrMode = Wholes | Sharps | Flats | All | Mark Note | Frets
@@ -63,9 +67,15 @@ printString' prefix mode str = mconcat
   , case prefix of
       Colon -> " :: "
       Arrow -> " -> "
-  , mconcat
-      [ printf "%5s" (show x) <> " | "
-      | x <- take 12 $ [strOffset str + 1..]
+  , mconcat $ map (<> " | ")
+      [ case mode of
+          Wholes -> printf "%5s" $ either id (const "") (showNote x)
+          Sharps -> printf "%5s" $ either id fst (showNote x)
+          Flats  -> printf "%5s" $ either id snd (showNote x)
+          All    -> printf "%5s" $ either id (\(x, y) -> x <> "/" <> y) (showNote x)
+          Mark n -> printf "%5s" $ if n == x then "*" else "" :: String
+          Frets  -> printf "%5s" $ show i
+      | (i, x) <- zip [1..] $ take 12 $ [strOffset str + 1..]
       ]
   ]
 
