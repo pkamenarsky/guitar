@@ -16,10 +16,10 @@ newtype Str = Str Int -- 0 = E string
 
 strOffset :: Str -> Note
 strOffset (Str 0) = 0
-strOffset (Str 1) = 7
-strOffset (Str 2) = 3
-strOffset (Str 3) = 10
-strOffset (Str 4) = 5
+strOffset (Str 1) = 5
+strOffset (Str 2) = 10
+strOffset (Str 3) = 3
+strOffset (Str 4) = 7
 strOffset (Str 5) = 0
 
 newtype Note = Note Int -- 0 = E on 1st string
@@ -42,6 +42,14 @@ showNote (Note x)  = showNote $ Note (x `mod` 12)
 
 isWhole :: Note -> Bool
 isWhole = isLeft . showNote
+
+noteToFret :: Str -> Note -> Int
+noteToFret str n
+  | n'' == 0 = 12
+  | otherwise = n''
+  where
+    Note n' = n - strOffset str
+    n'' = n' `mod` 12
 
 data StrPrefix = Colon | Arrow
 data StrMode
@@ -110,7 +118,9 @@ rndNotes :: Vty -> IO ()
 rndNotes vty = do
   str <- randomRIO (0, 5)
   n   <- randomRIO (1, 12)
+
   update vty $ picForImage $ fretImageForMark str n
+
   e <- nextEvent vty
   if e == EvKey (KChar ' ') []
     then pure ()
@@ -124,12 +134,61 @@ rndNotes vty = do
         then pure ()
         else rndNotes vty
 
+playNoteOnString :: Vty -> IO ()
+playNoteOnString vty = do
+  rstr <- randomRIO (0, 5)
+  n    <- randomRIO (1, 12)
+
+  update vty $ picForImage $ vertCat
+    [ fretImage
+        [ Wholes Colon str
+        | str <- [0..5]
+        ]
+    , string defAttr ""
+    , fretImage
+        [ if str == rstr then Empty Arrow str else Empty Colon str
+        | str <- [0..5]
+        ]
+
+    , string defAttr ""
+    , string defAttr $ case showNote n of
+        Left n -> n
+        Right (x, y) -> x <> "/" <> y
+    ]
+
+  e <- nextEvent vty
+
+  case e of
+    EvMouseDown x y _ _ -> let fret = (x - 5) `div` 8 + 1 in do
+      update vty $ picForImage $ string defAttr $ if noteToFret rstr n == fret
+        then "RIGHT"
+        else "WRONG: " <> show (noteToFret rstr n)
+
+      _ <- nextEvent vty -- mouse up
+      pure ()
+    _ -> pure ()
+
+  e <- nextEvent vty
+
+  next <- case e of
+    EvKey (KChar ' ') [] -> pure False
+    EvMouseDown _ _ _ _ -> do
+      _ <- nextEvent vty -- mouse up
+      pure True
+    _ -> pure True
+
+  if next
+    then playNoteOnString vty
+    else pure ()
+
 main :: IO ()
 main = do
   let cfg = defaultConfig
        { mouseMode = Just True
        }
   vty <- mkVty cfg
-  rndNotes vty
+
+  -- rndNotes vty
+  playNoteOnString vty
+
   shutdown vty
-    
