@@ -23,21 +23,6 @@ strOffset (Str 5) = 0
 newtype Note = Note Int -- 0 = E on 1st string
   deriving (Eq, Ord, Num, Enum)
 
-instance Show Note where
-  show (Note 0) = "E"
-  show (Note 1) = "F"
-  show (Note 2) = "F#/Gb"
-  show (Note 3) = "G"
-  show (Note 4) = "G#/Ab"
-  show (Note 5) = "A"
-  show (Note 6) = "A#/Bb"
-  show (Note 7) = "B"
-  show (Note 8) = "C"
-  show (Note 9) = "C#/Db"
-  show (Note 10) = "D"
-  show (Note 11) = "D#/Eb"
-  show (Note x) = show $ Note (x `mod` 12)
-
 showNote :: Note -> Either String (String, String)
 showNote (Note 0)  = Left "E"
 showNote (Note 1)  = Left "F"
@@ -57,101 +42,70 @@ isWhole :: Note -> Bool
 isWhole = isLeft . showNote
 
 data StrPrefix = Colon | Arrow
-data StrMode = Wholes | Sharps | Flats | All | Mark Note | Frets
+data StrMode
+  = Wholes StrPrefix Str
+  | Sharps StrPrefix Str
+  | Flats StrPrefix Str
+  | All StrPrefix Str
+  | Mark StrPrefix Str Note
+  | Empty StrPrefix Str
+  | Frets
 
-printString' :: StrPrefix -> StrMode -> Str -> String
-printString' prefix mode str = mconcat
+printString :: StrMode -> String
+printString mode = mconcat
   [ case mode of
-      Frets -> "    "
-      _ -> show (strOffset str)
+      Wholes _ str -> either id (error "printString") $ showNote (strOffset str)
+      Sharps _ str -> either id (error "printString") $ showNote (strOffset str)
+      Flats _ str  -> either id (error "printString") $ showNote (strOffset str)
+      All _ str    -> either id (error "printString") $ showNote (strOffset str)
+      Mark _ str n -> either id (error "printString") $ showNote (strOffset str)
+      Empty _ str  -> either id (error "printString") $ showNote (strOffset str)
+      Frets        -> " "
+
   , case prefix of
-      Colon -> " :: "
-      Arrow -> " -> "
+      Just Colon -> " :: "
+      Just Arrow -> " -> "
+      Nothing    -> "    "
+
   , mconcat $ map (<> " | ")
       [ case mode of
-          Wholes -> printf "%5s" $ either id (const "") (showNote x)
-          Sharps -> printf "%5s" $ either id fst (showNote x)
-          Flats  -> printf "%5s" $ either id snd (showNote x)
-          All    -> printf "%5s" $ either id (\(x, y) -> x <> "/" <> y) (showNote x)
-          Mark n -> printf "%5s" $ if n == x then "*" else "" :: String
-          Frets  -> printf "%5s" $ show i
-      | (i, x) <- zip [1..] $ take 12 $ [strOffset str + 1..]
+          Wholes _ str -> printf "%5s" $ either id (const "") (showNote $ strOffset str + x)
+          Sharps _ str -> printf "%5s" $ either id fst (showNote $ strOffset str + x)
+          Flats _ str  -> printf "%5s" $ either id snd (showNote $ strOffset str + x)
+          All _ str    -> printf "%5s" $ either id (\(x, y) -> x <> "/" <> y) (showNote $ strOffset str + x)
+          Mark _ str n -> printf "%5s" $ if n == x then "*" else "" :: String
+          Empty _ str  -> printf "%5s" ("" :: String)
+          Frets        -> printf "%5s" $ show i
+      | (i, x) <- zip [1..] $ take 12 $ [1..]
       ]
   ]
-
-printString :: Note -> String
-printString root = mconcat
-  [ show root, " :: "
-  , mconcat [ printf "%5s" (show x) <> " | " | x <- take 12 $ [root + 1..] ]
-  ]
-
-printEmpty :: String
-printEmpty = mconcat
-  [ "     "
-  , mconcat [ "      | " | x <- [1..12] ]
-  ]
-
-printNumbering :: String
-printNumbering = mconcat
-  [ "     "
-  , mconcat [ printf "%5s" (show x) <> " | " | x <- [1..12] ]
-  ]
-
-printMark :: Note -> String
-printMark n = mconcat
-  [ "     "
-  , mconcat [ if Note x == n then "    * | " else "      | " | x <- [1..12] ]
-  ]
   where
-    s :: String -> String
-    s = id
+    prefix = case mode of
+      Wholes p _ -> Just p
+      Sharps p _ -> Just p
+      Flats p _  -> Just p
+      All p _    -> Just p
+      Mark p _ _ -> Just p
+      Empty p _  -> Just p
+      Frets      -> Nothing
 
-markFretImage :: Str -> Note -> Image
-markFretImage s n = vertCat $ map (string defAttr) $ mconcat
-  [ [ if s == 5 - str then printMark n else printEmpty | str <- [ 0..5 ]
-    ]
+fretImage :: [StrMode] -> Image
+fretImage strs = vertCat $ map (string defAttr) $ mconcat
+  [ [ printString str | str <- reverse strs ]
   ,
     [ ""
-    , printNumbering
+    , printString Frets
     ]
   ]
 
-printFret :: String
-printFret = intercalate "\n" $ mconcat
-  [ [ printString str | str <- [ 0..5 ]
-    ]
-  ,
-    [ ""
-    , printNumbering
-    ]
-  ]
-
-fretImage :: Image
-fretImage = vertCat
-  [ string defAttr $ printString 0
-  , string defAttr $ printString 7
-  , string defAttr $ printString 3
-  , string defAttr $ printString 10
-  , string defAttr $ printString 5
-  , string defAttr $ printString 0
-  , string defAttr $ ""
-  , string defAttr $ printNumbering
+fretImageForMark :: Str -> Note -> Image
+fretImageForMark s n = fretImage
+  [ if str == s then Mark Colon str n else Empty Colon str
+  | str <- [0..5]
   ]
 
 main :: IO ()
-main = putStrLn printFret
-
--- testTerminal :: IO ()
--- testTerminal = do
---   putStr requestMouseEvents
---   withTerminal $ runTerminalT $ do
---     putTextLn "Hello there, please press a button!"
---     flush
---     ev <- awaitEvent
---     putStringLn $ "Event was " ++ show ev
---     flush
-
-main2 = do
+main = do
     let cfg = defaultConfig
          { mouseMode = Just True
          }
@@ -160,7 +114,7 @@ main2 = do
     --     line1 = string (defAttr ` withBackColor ` blue) "second line"
     --     img = line0 <-> line1
     --     pic = picForImage img
-    update vty $ picForImage $ markFretImage 0 5
+    update vty $ picForImage $ fretImageForMark 0 8
     e <- nextEvent vty
     shutdown vty
     print ("Last event was: " ++ show e)
