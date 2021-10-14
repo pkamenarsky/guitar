@@ -3,13 +3,37 @@
 
 module Main where
 
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (race_)
+import Control.Concurrent.STM (atomically)
+import Control.Concurrent.STM.TChan (TChan, dupTChan, readTChan)
+
 import Data.Either (isLeft)
 import Data.List (intercalate)
 import Text.Printf (printf)
 
 import System.Random
 
-import Graphics.Vty
+import Graphics.Vty hiding (nextEvent)
+
+orr :: TChan a -> [TChan a -> IO ()] -> IO ()
+orr _ [] = threadDelay maxBound
+orr ch (io:ios) = do
+  dch <- atomically $ dupTChan ch
+  race_ (io dch) (orr ch ios)
+
+eventChan :: Vty -> TChan Event
+eventChan = _eventChannel . inputIface
+
+getEvent :: TChan Event -> IO Event
+getEvent ch = do
+  e <- atomically $ readTChan ch
+
+  case e of
+    EvMouseDown _ _ _ _ -> do
+      _ <- atomically $ readTChan ch -- mouse up
+      pure e
+    _ -> pure e
 
 newtype Str = Str Int -- 0 = E string
   deriving (Eq, Ord, Num, Enum, Random)
@@ -114,28 +138,25 @@ fretImageForMark s n = fretImage
   | str <- [0..5]
   ]
 
-rndNotes :: Vty -> IO ()
-rndNotes vty = do
+rndNotes :: Vty -> TChan Event -> IO ()
+rndNotes vty ch = do
   str <- randomRIO (0, 5)
   n   <- randomRIO (1, 12)
 
   update vty $ picForImage $ fretImageForMark str n
 
-  e <- nextEvent vty
-  if e == EvKey (KChar ' ') []
-    then pure ()
-    else do
-      update vty $ picForImage $ string defAttr $ case showNote (strOffset str + n) of
-        Left n -> n
-        Right (x, y) -> x <> "/" <> y
+  _ <- getEvent ch
 
-      e <- nextEvent vty
-      if e == EvKey (KChar ' ') []
-        then pure ()
-        else rndNotes vty
+  update vty $ picForImage $ string defAttr $ case showNote (strOffset str + n) of
+    Left n -> n
+    Right (x, y) -> x <> "/" <> y
 
-playNoteOnString :: Vty -> IO ()
-playNoteOnString vty = do
+  _ <- getEvent ch
+
+  rndNotes vty ch
+
+playNoteOnString :: Vty -> TChan Event -> IO ()
+playNoteOnString vty ch = do
   rstr <- randomRIO (0, 5)
   n    <- randomRIO (1, 12)
 
@@ -156,29 +177,26 @@ playNoteOnString vty = do
         Right (x, y) -> x <> "/" <> y
     ]
 
-  e <- nextEvent vty
+  e <- getEvent ch
 
   case e of
     EvMouseDown x y _ _ -> let fret = (x - 5) `div` 8 + 1 in do
       update vty $ picForImage $ string defAttr $ if noteToFret rstr n == fret
         then "RIGHT"
         else "WRONG: " <> show (noteToFret rstr n)
-
-      _ <- nextEvent vty -- mouse up
       pure ()
     _ -> pure ()
 
-  e <- nextEvent vty
+  _ <- getEvent ch
 
-  next <- case e of
-    EvKey (KChar ' ') [] -> pure False
-    EvMouseDown _ _ _ _ -> do
-      _ <- nextEvent vty -- mouse up
-      pure True
-    _ -> pure True
+  playNoteOnString vty ch
 
-  if next
-    then playNoteOnString vty
+quitOnSpace :: TChan Event -> IO ()
+quitOnSpace ch = do
+  e <- getEvent ch
+
+  if e /= EvKey (KChar ' ') []
+    then quitOnSpace ch
     else pure ()
 
 main :: IO ()
@@ -188,7 +206,14 @@ main = do
        }
   vty <- mkVty cfg
 
-  -- rndNotes vty
-  playNoteOnString vty
+  -- orr (eventChan vty)
+  --  [ rndNotes vty
+  --  , quitOnSpace
+  --  ]
+
+  orr (eventChan vty)
+    [ playNoteOnString vty
+    , quitOnSpace
+    ]
 
   shutdown vty
