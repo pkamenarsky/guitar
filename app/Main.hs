@@ -4,7 +4,7 @@
 module Main where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (race_)
+import Control.Concurrent.Async (race)
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TChan (TChan, dupTChan, readTChan)
 
@@ -16,11 +16,13 @@ import System.Random
 
 import Graphics.Vty hiding (nextEvent)
 
-orr :: TChan a -> [TChan a -> IO ()] -> IO ()
-orr _ [] = threadDelay maxBound
+orr :: TChan a -> [TChan a -> IO b] -> IO b
+orr _ [] = do
+  threadDelay maxBound
+  pure undefined
 orr ch (io:ios) = do
   dch <- atomically $ dupTChan ch
-  race_ (io dch) (orr ch ios)
+  either id id <$> race (io dch) (orr ch ios)
 
 eventChan :: Vty -> TChan Event
 eventChan = _eventChannel . inputIface
@@ -166,24 +168,7 @@ playNoteOnString vty ch = do
   rstr <- randomRIO (0, 5)
   n    <- randomRIO (1, 12)
 
-  update vty $ picForImage $ vertCat
-    [ fretImage (Just n)
-        [ Wholes Colon str
-        | str <- [0..5]
-        ]
-    , string defAttr ""
-    , fretImage Nothing
-        [ if str == rstr then Empty Arrow str else Empty Colon str
-        | str <- [0..5]
-        ]
-
-    , string defAttr ""
-    , string defAttr $ case showNote n of
-        Left n -> n
-        Right (x, y) -> x <> "/" <> y
-    ]
-
-  e <- getEvent ch
+  e <- drawFret True rstr n ch
 
   case e of
     EvMouseDown x y _ _ -> let fret = (x - 5) `div` 8 + 1 in do
@@ -196,13 +181,42 @@ playNoteOnString vty ch = do
       playNoteOnString vty ch
 
     _ -> playNoteOnString vty ch
+  where
+    drawFret mode rstr n ch = do
 
-quitOnSpace :: TChan Event -> IO ()
-quitOnSpace ch = do
+      if mode
+        then update vty $ picForImage $ vertCat
+          [ fretImage Nothing
+              [ if str == rstr then Empty Arrow str else Empty Colon str
+              | str <- [0..5]
+              ]
+
+          , string defAttr ""
+          , string defAttr $ case showNote n of
+              Left n -> n
+              Right (x, y) -> x <> "/" <> y
+          ]
+        else update vty $ picForImage $ vertCat
+          [ fretImage (Just n)
+              [ All Colon str
+              | str <- [0..5]
+              ]
+          ]
+
+      e <- getEvent ch
+
+      case e of
+        EvKey (KChar 't') [] -> drawFret (not mode) rstr n ch
+        EvKey (KChar 'n') [] -> pure e
+        EvMouseDown _ _ _ _ -> pure e
+        _ -> drawFret mode rstr n ch
+
+quitOnQ :: TChan Event -> IO ()
+quitOnQ ch = do
   e <- getEvent ch
 
-  if e /= EvKey (KChar ' ') []
-    then quitOnSpace ch
+  if e /= EvKey (KChar 'q') []
+    then quitOnQ ch
     else pure ()
 
 main :: IO ()
@@ -214,12 +228,12 @@ main = do
 
   -- orr (eventChan vty)
   --  [ rndNotes vty
-  --  , quitOnSpace
+  --  , quitOnQ
   --  ]
 
   orr (eventChan vty)
     [ playNoteOnString vty
-    , quitOnSpace
+    , quitOnQ
     ]
 
   shutdown vty
