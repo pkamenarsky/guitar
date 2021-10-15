@@ -67,13 +67,15 @@ showNote (Note x)  = showNote $ Note (x `mod` 12)
 isWhole :: Note -> Bool
 isWhole = isLeft . showNote
 
+normalizeNote :: Note -> Note
+normalizeNote (Note n) = Note (n `mod` 12)
+
 noteToFret :: Str -> Note -> Int
 noteToFret str n
-  | n'' == 0 = 12
-  | otherwise = n''
+  | n' == 0 = 12
+  | otherwise = n'
   where
-    Note n' = n - strOffset str
-    n'' = n' `mod` 12
+    Note n' = normalizeNote (n - strOffset str)
 
 data StrPrefix = Colon | Arrow
 data StrMode
@@ -85,9 +87,9 @@ data StrMode
   | Empty StrPrefix Str
   | Frets
 
-printString :: StrMode -> String
-printString mode = mconcat
-  [ case mode of
+stringImage :: Maybe Note -> StrMode -> Image
+stringImage hln mode = horizCat
+  [ string defAttr $ case mode of
       Wholes _ str -> either id (error "printString") $ showNote (strOffset str)
       Sharps _ str -> either id (error "printString") $ showNote (strOffset str)
       Flats _ str  -> either id (error "printString") $ showNote (strOffset str)
@@ -96,24 +98,28 @@ printString mode = mconcat
       Empty _ str  -> either id (error "printString") $ showNote (strOffset str)
       Frets        -> " "
 
-  , case prefix of
+  , string defAttr $ case prefix of
       Just Colon -> " :: "
       Just Arrow -> " -> "
       Nothing    -> "    "
 
-  , mconcat $ map (<> " | ")
+  , horizCat $ map (`horizJoin` string defAttr " | ")
       [ case mode of
-          Wholes _ str -> printf "%5s" $ either id (const "") (showNote $ strOffset str + x)
-          Sharps _ str -> printf "%5s" $ either id fst (showNote $ strOffset str + x)
-          Flats _ str  -> printf "%5s" $ either id snd (showNote $ strOffset str + x)
-          All _ str    -> printf "%5s" $ either id (\(x, y) -> x <> "/" <> y) (showNote $ strOffset str + x)
-          Mark _ str n -> printf "%5s" $ if n == x then "*" else "" :: String
-          Empty _ str  -> printf "%5s" ("" :: String)
-          Frets        -> printf "%5s" $ show i
+          Wholes _ str -> string (hlAttr str x) $ printf "%5s" $ either id (const "") (showNote $ strOffset str + x)
+          Sharps _ str -> string (hlAttr str x) $ printf "%5s" $ either id fst (showNote $ strOffset str + x)
+          Flats _ str  -> string (hlAttr str x) $ printf "%5s" $ either id snd (showNote $ strOffset str + x)
+          All _ str    -> string (hlAttr str x) $ printf "%5s" $ either id (\(x, y) -> x <> "/" <> y) (showNote $ strOffset str + x)
+          Mark _ str n -> string defAttr $ printf "%5s" $ if n == x then "*" else "" :: String
+          Empty _ str  -> string defAttr $ printf "%5s" ("" :: String)
+          Frets        -> string defAttr $ printf "%5s" $ show i
       | (i, x) <- zip [1..] $ take 12 $ [1..]
       ]
   ]
   where
+    hlAttr str n
+      | Just (normalizeNote $ strOffset str + n) == fmap normalizeNote hln = defAttr `withBackColor` cyan `withForeColor` black
+      | otherwise = defAttr
+
     prefix = case mode of
       Wholes p _ -> Just p
       Sharps p _ -> Just p
@@ -123,17 +129,17 @@ printString mode = mconcat
       Empty p _  -> Just p
       Frets      -> Nothing
 
-fretImage :: [StrMode] -> Image
-fretImage strs = vertCat $ map (string defAttr) $ mconcat
-  [ [ printString str | str <- reverse strs ]
+fretImage :: Maybe Note -> [StrMode] -> Image
+fretImage hln strs = vertCat $ mconcat
+  [ [ stringImage hln str | str <- reverse strs ]
   ,
-    [ ""
-    , printString Frets
+    [ string defAttr ""
+    , stringImage hln Frets
     ]
   ]
 
 fretImageForMark :: Str -> Note -> Image
-fretImageForMark s n = fretImage
+fretImageForMark s n = fretImage Nothing
   [ if str == s then Mark Colon str n else Empty Colon str
   | str <- [0..5]
   ]
@@ -161,12 +167,12 @@ playNoteOnString vty ch = do
   n    <- randomRIO (1, 12)
 
   update vty $ picForImage $ vertCat
-    [ fretImage
+    [ fretImage (Just n)
         [ Wholes Colon str
         | str <- [0..5]
         ]
     , string defAttr ""
-    , fretImage
+    , fretImage Nothing
         [ if str == rstr then Empty Arrow str else Empty Colon str
         | str <- [0..5]
         ]
@@ -184,12 +190,12 @@ playNoteOnString vty ch = do
       update vty $ picForImage $ string defAttr $ if noteToFret rstr n == fret
         then "RIGHT"
         else "WRONG: " <> show (noteToFret rstr n)
-      pure ()
-    _ -> pure ()
 
-  _ <- getEvent ch
+      _ <- getEvent ch
 
-  playNoteOnString vty ch
+      playNoteOnString vty ch
+
+    _ -> playNoteOnString vty ch
 
 quitOnSpace :: TChan Event -> IO ()
 quitOnSpace ch = do
