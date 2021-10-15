@@ -211,6 +211,20 @@ playNoteOnString vty ch = do
         EvMouseDown _ _ _ _ -> pure e
         _ -> drawFret mode rstr n ch
 
+showNotesOnStrings :: Note -> Vty -> TChan Event -> IO ()
+showNotesOnStrings n vty ch = do
+  update vty $ picForImage $ fretImage (Just n)
+    [ All Colon str
+    | str <- [0..5]
+    ]
+
+  e <- getEvent ch
+
+  case e of
+    EvKey (KChar 'j') [] -> showNotesOnStrings (normalizeNote (n + 1)) vty ch
+    EvKey (KChar 'k') [] -> showNotesOnStrings (normalizeNote (n - 1)) vty ch
+    _ -> showNotesOnStrings n vty ch
+
 quitOnQ :: TChan Event -> IO ()
 quitOnQ ch = do
   e <- getEvent ch
@@ -219,6 +233,28 @@ quitOnQ ch = do
     then quitOnQ ch
     else pure ()
 
+menu :: [(String, IO ())] -> Int -> Vty -> TChan Event -> IO ()
+menu opts optIndex vty ch = do
+  update vty $ picForImage $ vertCat
+    [ string (attr i) opt
+    | (i, (opt, _)) <- zip [0..] opts
+    ]
+
+  e <- getEvent ch
+
+  case e of
+    EvKey (KChar 'j') [] -> menu opts ((optIndex + 1) `mod` length opts) vty ch
+    EvKey (KChar 'k') [] -> menu opts ((optIndex - 1) `mod` length opts) vty ch
+    EvKey KEnter [] -> do
+      snd (opts !! optIndex)
+      menu opts optIndex vty ch
+    _ -> menu opts optIndex vty ch
+
+  where
+    attr x
+      | optIndex == x = defAttr `withBackColor` cyan `withForeColor` black
+      | otherwise = defAttr
+
 main :: IO ()
 main = do
   let cfg = defaultConfig
@@ -226,14 +262,45 @@ main = do
        }
   vty <- mkVty cfg
 
+  orr (eventChan vty)
+    [ menu (opts vty) 0 vty
+    , quitOnQ
+    ]
+
+  -- orr (eventChan vty)
+  --  [ showNotesOnStrings 0 vty
+  --  , quitOnQ
+  --  ]
+
   -- orr (eventChan vty)
   --  [ rndNotes vty
   --  , quitOnQ
   --  ]
 
-  orr (eventChan vty)
-    [ playNoteOnString vty
-    , quitOnQ
-    ]
+  -- orr (eventChan vty)
+  --   [ playNoteOnString vty
+  --   , quitOnQ
+  --   ]
 
   shutdown vty
+  where
+    opts vty =
+      [ ( "Notes on string"
+        , orr (eventChan vty)
+            [ showNotesOnStrings 0 vty
+            , quitOnQ
+            ]
+        )
+      , ( "Guess note"
+        , orr (eventChan vty)
+            [ rndNotes vty
+            , quitOnQ
+            ]
+        )
+      , ( "Guess fret"
+        , orr (eventChan vty)
+            [ playNoteOnString vty
+            , quitOnQ
+            ]
+        )
+      ]
