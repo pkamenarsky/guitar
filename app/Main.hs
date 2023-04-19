@@ -6,7 +6,9 @@ module Main where
 import Control.Concurrent (threadDelay)
 import Control.Monad.Trans.Cont
 import Control.Monad.Trans.Class (lift)
+import Control.Monad.IO.Class (MonadIO)
 
+import qualified Data.Aeson as A
 import Data.Either (isLeft)
 import Data.List (intercalate)
 import Data.Maybe (fromJust)
@@ -147,6 +149,11 @@ fretImage desn hln strs = vertCat $ mconcat
     , stringImage DontDrawEmptyStringNotes hln Frets
     ]
   ]
+
+-- Spaced repetition -----------------------------------------------------------
+
+spaced :: MonadIO m => FilePath -> [a] -> m a
+spaced fp as = undefined
 
 -- Apps ------------------------------------------------------------------------
 
