@@ -4,9 +4,8 @@
 module Main where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (race)
-import Control.Concurrent.STM (atomically)
-import Control.Concurrent.STM.TChan (TChan, dupTChan, readTChan)
+import Control.Monad.Trans.Cont
+import Control.Monad.Trans.Class (lift)
 
 import Data.Either (isLeft)
 import Data.List (intercalate)
@@ -14,28 +13,23 @@ import Text.Printf (printf)
 
 import System.Random
 
-import Graphics.Vty hiding (nextEvent)
+import Graphics.Vty hiding (nextEvent, update)
+import qualified Graphics.Vty as Vty
 
-orr :: TChan a -> [TChan a -> IO b] -> IO b
-orr _ [] = do
-  threadDelay maxBound
-  pure undefined
-orr ch (io:ios) = do
-  dch <- atomically $ dupTChan ch
-  either id id <$> race (io dch) (orr ch ios)
+type App = ContT () IO
 
-eventChan :: Vty -> TChan Event
-eventChan = _eventChannel . inputIface
+update :: Vty -> Picture -> App ()
+update vty = lift . Vty.update vty
 
-getEvent :: TChan Event -> IO Event
-getEvent ch = do
-  e <- atomically $ readTChan ch
-
+quittable :: Vty -> (App Event -> App ()) -> App ()
+quittable vty m = callCC $ \k -> m $ do
+  e <- lift $ Vty.nextEvent vty
   case e of
+    EvKey (KChar 'q') [] -> k ()
     EvMouseDown _ _ _ _ -> do
-      _ <- atomically $ readTChan ch -- mouse up
+      _ <- lift $ Vty.nextEvent vty
       pure e
-    _ -> pure e
+    e -> pure e
 
 newtype Str = Str Int -- 0 = E string
   deriving (Eq, Ord, Num, Enum, Random)
@@ -146,29 +140,29 @@ fretImageForMark s n = fretImage Nothing
   | str <- [0..5]
   ]
 
-rndNotes :: Vty -> TChan Event -> IO ()
-rndNotes vty ch = do
+rndNotes :: Vty -> App ()
+rndNotes vty = quittable vty $ \nextEvent -> do
   str <- randomRIO (0, 5)
-  n   <- randomRIO (1, 12)
+  n   <- randomRIO (1, 3)
 
   update vty $ picForImage $ fretImageForMark str n
 
-  _ <- getEvent ch
+  _ <- nextEvent
 
   update vty $ picForImage $ string defAttr $ case showNote (strOffset str + n) of
     Left n -> n
     Right (x, y) -> x <> "/" <> y
 
-  _ <- getEvent ch
+  _ <- nextEvent
 
-  rndNotes vty ch
+  rndNotes vty
 
-playNoteOnString :: Vty -> TChan Event -> IO ()
-playNoteOnString vty ch = do
+playNoteOnString :: Vty -> App ()
+playNoteOnString vty = quittable vty $ \nextEvent -> do
   rstr <- randomRIO (0, 5)
   n    <- randomRIO (1, 12)
 
-  e <- drawFret True rstr n ch
+  e <- drawFret True rstr n nextEvent
 
   case e of
     EvMouseDown x y _ _ -> let fret = (x - 5) `div` 8 + 1 in do
@@ -176,13 +170,13 @@ playNoteOnString vty ch = do
         then "RIGHT"
         else "WRONG: " <> show (noteToFret rstr n)
 
-      _ <- getEvent ch
+      _ <- nextEvent
 
-      playNoteOnString vty ch
+      playNoteOnString vty
 
-    _ -> playNoteOnString vty ch
+    _ -> playNoteOnString vty
   where
-    drawFret mode rstr n ch = do
+    drawFret mode rstr n nextEvent = do
 
       if mode
         then update vty $ picForImage $ vertCat
@@ -203,52 +197,47 @@ playNoteOnString vty ch = do
               ]
           ]
 
-      e <- getEvent ch
+      e <- nextEvent
 
       case e of
-        EvKey (KChar 't') [] -> drawFret (not mode) rstr n ch
+        EvKey (KChar 't') [] -> drawFret (not mode) rstr n nextEvent
         EvKey (KChar 'n') [] -> pure e
         EvMouseDown _ _ _ _ -> pure e
-        _ -> drawFret mode rstr n ch
+        _ -> drawFret mode rstr n nextEvent
 
-showNotesOnStrings :: Note -> Vty -> TChan Event -> IO ()
-showNotesOnStrings n vty ch = do
+showNotesOnStrings :: Note -> Vty -> App ()
+showNotesOnStrings n vty = quittable vty $ \nextEvent -> do
   update vty $ picForImage $ fretImage (Just n)
     [ All Colon str
     | str <- [0..5]
     ]
 
-  e <- getEvent ch
+  e <- nextEvent
 
   case e of
-    EvKey (KChar 'j') [] -> showNotesOnStrings (normalizeNote (n + 1)) vty ch
-    EvKey (KChar 'k') [] -> showNotesOnStrings (normalizeNote (n - 1)) vty ch
-    _ -> showNotesOnStrings n vty ch
+    EvKey (KChar 'j') [] -> showNotesOnStrings (normalizeNote (n + 1)) vty
+    EvKey (KChar 'k') [] -> showNotesOnStrings (normalizeNote (n - 1)) vty
+    _ -> showNotesOnStrings n vty
 
-quitOnQ :: TChan Event -> IO ()
-quitOnQ ch = do
-  e <- getEvent ch
-
-  if e /= EvKey (KChar 'q') []
-    then quitOnQ ch
-    else pure ()
-
-menu :: [(String, IO ())] -> Int -> Vty -> TChan Event -> IO ()
-menu opts optIndex vty ch = do
+menu :: [(String, App ())] -> Int -> Vty -> App ()
+menu opts optIndex vty = quittable vty $ \nextEvent -> do
   update vty $ picForImage $ vertCat
     [ string (attr i) opt
     | (i, (opt, _)) <- zip [0..] opts
     ]
 
-  e <- getEvent ch
+  e <- nextEvent
 
   case e of
-    EvKey (KChar 'j') [] -> menu opts ((optIndex + 1) `mod` length opts) vty ch
-    EvKey (KChar 'k') [] -> menu opts ((optIndex - 1) `mod` length opts) vty ch
+    EvKey (KChar 'j') [] -> menu opts ((optIndex + 1) `mod` length opts) vty
+    EvKey (KChar 'k') [] -> menu opts ((optIndex - 1) `mod` length opts) vty
+    EvKey (KChar 'l') [] -> do
+      snd (opts !! optIndex)
+      menu opts optIndex vty
     EvKey KEnter [] -> do
       snd (opts !! optIndex)
-      menu opts optIndex vty ch
-    _ -> menu opts optIndex vty ch
+      menu opts optIndex vty
+    _ -> menu opts optIndex vty
 
   where
     attr x
@@ -262,45 +251,18 @@ main = do
        }
   vty <- mkVty cfg
 
-  orr (eventChan vty)
-    [ menu (opts vty) 0 vty
-    , quitOnQ
-    ]
-
-  -- orr (eventChan vty)
-  --  [ showNotesOnStrings 0 vty
-  --  , quitOnQ
-  --  ]
-
-  -- orr (eventChan vty)
-  --  [ rndNotes vty
-  --  , quitOnQ
-  --  ]
-
-  -- orr (eventChan vty)
-  --   [ playNoteOnString vty
-  --   , quitOnQ
-  --   ]
+  flip runContT pure $ menu (opts vty) 0 vty
 
   shutdown vty
   where
     opts vty =
       [ ( "Notes on string"
-        , orr (eventChan vty)
-            [ showNotesOnStrings 0 vty
-            , quitOnQ
-            ]
+        , showNotesOnStrings 0 vty
         )
       , ( "Guess note"
-        , orr (eventChan vty)
-            [ rndNotes vty
-            , quitOnQ
-            ]
+        , rndNotes vty
         )
       , ( "Guess fret"
-        , orr (eventChan vty)
-            [ playNoteOnString vty
-            , quitOnQ
-            ]
+        , playNoteOnString vty
         )
       ]
