@@ -9,9 +9,11 @@ import Control.Monad.Trans.Class (lift)
 
 import Data.Either (isLeft)
 import Data.List (intercalate)
+import Data.Maybe (fromJust)
 import Text.Printf (printf)
 
 import System.Random
+import System.Timeout (timeout)
 
 import Graphics.Vty hiding (nextEvent, update)
 import qualified Graphics.Vty as Vty
@@ -21,15 +23,23 @@ type App = ContT () IO
 update :: Vty -> Picture -> App ()
 update vty = lift . Vty.update vty
 
-quittable :: Vty -> (App Event -> App ()) -> App ()
-quittable vty m = callCC $ \k -> m $ do
-  e <- lift $ Vty.nextEvent vty
+data Chan = Chan Vty (() -> ContT () IO Event)
+
+nextEventTimeout :: Int -> Chan -> App (Maybe Event)
+nextEventTimeout secs (Chan vty k) = do
+  e <- lift $ timeout (secs * 1000000 ) $ Vty.nextEvent vty
   case e of
-    EvKey (KChar 'q') [] -> k ()
-    EvMouseDown _ _ _ _ -> do
-      _ <- lift $ Vty.nextEvent vty
+    Just (EvKey (KChar 'q') []) -> Just <$> k ()
+    Just (EvMouseDown _ _ _ _) -> do
+      _ <- lift $ Vty.nextEvent vty -- EvMouseUp
       pure e
     e -> pure e
+
+nextEvent :: Chan -> App Event
+nextEvent ch = fromJust <$> nextEventTimeout maxBound ch
+
+quittable :: Vty -> (Chan -> App ()) -> App ()
+quittable vty m = callCC $ \k -> m (Chan vty k)
 
 newtype Str = Str Int -- 0 = E string
   deriving (Eq, Ord, Num, Enum, Random)
@@ -83,16 +93,20 @@ data StrMode
   | Empty StrPrefix Str
   | Frets
 
-stringImage :: Maybe Note -> StrMode -> Image
-stringImage hln mode = horizCat
-  [ string defAttr $ case mode of
-      Wholes _ str -> either id (error "printString") $ showNote (strOffset str)
-      Sharps _ str -> either id (error "printString") $ showNote (strOffset str)
-      Flats _ str  -> either id (error "printString") $ showNote (strOffset str)
-      All _ str    -> either id (error "printString") $ showNote (strOffset str)
-      Mark _ str n -> either id (error "printString") $ showNote (strOffset str)
-      Empty _ str  -> either id (error "printString") $ showNote (strOffset str)
-      Frets        -> " "
+data DrawEmptyStringNotes = DrawEmptyStringNotes | DontDrawEmptyStringNotes
+
+stringImage :: DrawEmptyStringNotes -> Maybe Note -> StrMode -> Image
+stringImage desn hln mode = horizCat
+  [ string defAttr $ case desn of
+      DrawEmptyStringNotes -> case mode of
+        Wholes _ str -> either id (error "printString") $ showNote (strOffset str)
+        Sharps _ str -> either id (error "printString") $ showNote (strOffset str)
+        Flats _ str  -> either id (error "printString") $ showNote (strOffset str)
+        All _ str    -> either id (error "printString") $ showNote (strOffset str)
+        Mark _ str n -> either id (error "printString") $ showNote (strOffset str)
+        Empty _ str  -> either id (error "printString") $ showNote (strOffset str)
+        Frets        -> " "
+      DontDrawEmptyStringNotes -> " "
 
   , string defAttr $ case prefix of
       Just Colon -> " :: "
@@ -125,44 +139,46 @@ stringImage hln mode = horizCat
       Empty p _  -> Just p
       Frets      -> Nothing
 
-fretImage :: Maybe Note -> [StrMode] -> Image
-fretImage hln strs = vertCat $ mconcat
-  [ [ stringImage hln str | str <- reverse strs ]
+fretImage :: DrawEmptyStringNotes -> Maybe Note -> [StrMode] -> Image
+fretImage desn hln strs = vertCat $ mconcat
+  [ [ stringImage desn hln str | str <- reverse strs ]
   ,
     [ string defAttr ""
-    , stringImage hln Frets
+    , stringImage DontDrawEmptyStringNotes hln Frets
     ]
   ]
 
-fretImageForMark :: Str -> Note -> Image
-fretImageForMark s n = fretImage Nothing
-  [ if str == s then Mark Colon str n else Empty Colon str
-  | str <- [0..5]
-  ]
+-- Apps ------------------------------------------------------------------------
 
-rndNotes :: Vty -> App ()
-rndNotes vty = quittable vty $ \nextEvent -> do
+guessNote :: Vty -> DrawEmptyStringNotes -> Note -> App ()
+guessNote vty desn limit = quittable vty $ \ch -> do
   str <- randomRIO (0, 5)
-  n   <- randomRIO (1, 3)
+  n   <- randomRIO (1, limit)
 
   update vty $ picForImage $ fretImageForMark str n
 
-  _ <- nextEvent
+  _ <- nextEventTimeout 3 ch
 
   update vty $ picForImage $ string defAttr $ case showNote (strOffset str + n) of
     Left n -> n
     Right (x, y) -> x <> "/" <> y
 
-  _ <- nextEvent
+  _ <- nextEvent ch
 
-  rndNotes vty
+  guessNote vty desn limit
+  where
+    fretImageForMark :: Str -> Note -> Image
+    fretImageForMark s n = fretImage desn Nothing
+      [ if str == s then Mark Colon str n else Empty Colon str
+      | str <- [0..5]
+      ]
 
-playNoteOnString :: Vty -> App ()
-playNoteOnString vty = quittable vty $ \nextEvent -> do
+guessFret :: Vty -> DrawEmptyStringNotes -> App ()
+guessFret vty desn = quittable vty $ \ch -> do
   rstr <- randomRIO (0, 5)
   n    <- randomRIO (1, 12)
 
-  e <- drawFret True rstr n nextEvent
+  e <- drawFret True rstr n ch
 
   case e of
     EvMouseDown x y _ _ -> let fret = (x - 5) `div` 8 + 1 in do
@@ -170,17 +186,17 @@ playNoteOnString vty = quittable vty $ \nextEvent -> do
         then "RIGHT"
         else "WRONG: " <> show (noteToFret rstr n)
 
-      _ <- nextEvent
+      _ <- nextEvent ch
 
-      playNoteOnString vty
+      guessFret vty desn
 
-    _ -> playNoteOnString vty
+    _ -> guessFret vty desn
   where
-    drawFret mode rstr n nextEvent = do
+    drawFret mode rstr n ch = do
 
       if mode
         then update vty $ picForImage $ vertCat
-          [ fretImage Nothing
+          [ fretImage desn Nothing
               [ if str == rstr then Empty Arrow str else Empty Colon str
               | str <- [0..5]
               ]
@@ -191,28 +207,28 @@ playNoteOnString vty = quittable vty $ \nextEvent -> do
               Right (x, y) -> x <> "/" <> y
           ]
         else update vty $ picForImage $ vertCat
-          [ fretImage (Just n)
+          [ fretImage desn (Just n)
               [ All Colon str
               | str <- [0..5]
               ]
           ]
 
-      e <- nextEvent
+      e <- nextEvent ch
 
       case e of
-        EvKey (KChar 't') [] -> drawFret (not mode) rstr n nextEvent
+        EvKey (KChar 't') [] -> drawFret (not mode) rstr n ch
         EvKey (KChar 'n') [] -> pure e
         EvMouseDown _ _ _ _ -> pure e
-        _ -> drawFret mode rstr n nextEvent
+        _ -> drawFret mode rstr n ch
 
 showNotesOnStrings :: Note -> Vty -> App ()
-showNotesOnStrings n vty = quittable vty $ \nextEvent -> do
-  update vty $ picForImage $ fretImage (Just n)
+showNotesOnStrings n vty = quittable vty $ \ch -> do
+  update vty $ picForImage $ fretImage DrawEmptyStringNotes (Just n)
     [ All Colon str
     | str <- [0..5]
     ]
 
-  e <- nextEvent
+  e <- nextEvent ch
 
   case e of
     EvKey (KChar 'j') [] -> showNotesOnStrings (normalizeNote (n + 1)) vty
@@ -220,13 +236,13 @@ showNotesOnStrings n vty = quittable vty $ \nextEvent -> do
     _ -> showNotesOnStrings n vty
 
 menu :: [(String, App ())] -> Int -> Vty -> App ()
-menu opts optIndex vty = quittable vty $ \nextEvent -> do
+menu opts optIndex vty = quittable vty $ \ch -> do
   update vty $ picForImage $ vertCat
     [ string (attr i) opt
     | (i, (opt, _)) <- zip [0..] opts
     ]
 
-  e <- nextEvent
+  e <- nextEvent ch
 
   case e of
     EvKey (KChar 'j') [] -> menu opts ((optIndex + 1) `mod` length opts) vty
@@ -260,9 +276,9 @@ main = do
         , showNotesOnStrings 0 vty
         )
       , ( "Guess note"
-        , rndNotes vty
+        , guessNote vty DontDrawEmptyStringNotes 3
         )
       , ( "Guess fret"
-        , playNoteOnString vty
+        , guessFret vty DontDrawEmptyStringNotes
         )
       ]
