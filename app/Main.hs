@@ -157,16 +157,22 @@ guessNote vty desn limit = quittable vty $ \ch -> do
 
   update vty $ picForImage $ fretImageForMark str n
 
-  _ <- nextEventTimeout 3 ch
+  e <- nextEventTimeout 3 ch
 
-  update vty $ picForImage $ string defAttr $ case showNote (strOffset str + n) of
-    Left n -> n
-    Right (x, y) -> x <> "/" <> y
+  update vty
+    $ picForImage
+    $ string (attrForNote e)
+    $ case showNote (strOffset str + n) of
+        Left n -> n
+        Right (x, y) -> x <> "/" <> y
 
   _ <- nextEvent ch
 
   guessNote vty desn limit
   where
+    attrForNote Nothing  = defAttr `withBackColor` red `withForeColor` black
+    attrForNote (Just _) = defAttr
+
     fretImageForMark :: Str -> Note -> Image
     fretImageForMark s n = fretImage desn Nothing
       [ if str == s then Mark Colon str n else Empty Colon str
