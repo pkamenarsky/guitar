@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -5,8 +7,8 @@ module Main where
 
 import Control.Concurrent (threadDelay)
 import Control.Monad.Trans.Cont
-import Control.Monad.Trans.Class (lift)
-import Control.Monad.IO.Class (MonadIO)
+import Control.Monad.Trans.Class (MonadTrans, lift)
+import Control.Monad.IO.Class (MonadIO, liftIO)
 
 import qualified Data.Aeson as A
 import Data.Either (isLeft)
@@ -20,28 +22,34 @@ import System.Timeout (timeout)
 import Graphics.Vty hiding (nextEvent, update)
 import qualified Graphics.Vty as Vty
 
-type App = ContT () IO
+import SignalT
 
-update :: Vty -> Picture -> App ()
-update vty = lift . Vty.update vty
+newtype AppT m a = App { runApp :: ContT () m a }
+  deriving (Functor, Applicative, Monad, MonadIO)
 
-data Chan = Chan Vty (() -> ContT () IO Event)
+type App = AppT IO
 
-nextEventTimeout :: Int -> Chan -> App (Maybe Event)
-nextEventTimeout secs (Chan vty k) = do
-  e <- lift $ timeout (secs * 1000000 ) $ Vty.nextEvent vty
+update :: MonadIO m => Vty -> Picture -> m ()
+update vty = liftIO . Vty.update vty
+
+data ChanT m = Chan Vty (() -> ContT () m Event)
+type Chan = ChanT IO
+
+nextEventTimeout :: MonadIO m => Int -> ChanT m -> AppT m (Maybe Event)
+nextEventTimeout secs (Chan vty k) = App $ do
+  e <- liftIO $ timeout (secs * 1000000 ) $ Vty.nextEvent vty
   case e of
     Just (EvKey (KChar 'q') []) -> Just <$> k ()
     Just (EvMouseDown _ _ _ _) -> do
-      _ <- lift $ Vty.nextEvent vty -- EvMouseUp
+      _ <- liftIO $ Vty.nextEvent vty -- EvMouseUp
       pure e
     e -> pure e
 
-nextEvent :: Chan -> App Event
+nextEvent :: MonadIO m => ChanT m -> AppT m Event
 nextEvent ch = fromJust <$> nextEventTimeout maxBound ch
 
-quittable :: Vty -> (Chan -> App ()) -> App ()
-quittable vty m = callCC $ \k -> m (Chan vty k)
+quittable :: Vty -> (Chan -> App a) -> App ()
+quittable vty m = App $ callCC $ \k -> runApp $ const () <$> m (Chan vty k)
 
 newtype Str = Str Int -- 0 = E string
   deriving (Eq, Ord, Num, Enum, Random)
@@ -152,31 +160,37 @@ fretImage desn hln strs = vertCat $ mconcat
 
 -- Spaced repetition -----------------------------------------------------------
 
-spaced :: MonadIO m => FilePath -> [a] -> m a
-spaced fp as = undefined
+spaced :: Show a => FilePath -> SignalT App a -> App ()
+spaced fp (SignalT m) = do
+  (a, next) <- m
+  liftIO $ print a
+  spaced fp next
 
 -- Apps ------------------------------------------------------------------------
 
 guessNote :: Vty -> DrawEmptyStringNotes -> Note -> App ()
-guessNote vty desn limit = quittable vty $ \ch -> do
-  str <- randomRIO (0, 5)
-  n   <- randomRIO (1, limit)
-
-  update vty $ picForImage $ fretImageForMark str n
-
-  e <- nextEventTimeout 3 ch
-
-  update vty
-    $ picForImage
-    $ string (attrForNote e)
-    $ case showNote (strOffset str + n) of
-        Left n -> n
-        Right (x, y) -> x <> "/" <> y
-
-  _ <- nextEvent ch
-
-  guessNote vty desn limit
+guessNote vty desn limit = quittable vty $ \ch -> spaced "" (go ch)
   where
+    go :: Chan -> SignalT App Int
+    go ch = do
+      str <- randomRIO (0, 5)
+      n   <- randomRIO (1, limit)
+
+      update vty $ picForImage $ fretImageForMark str n
+
+      e <- lift $ nextEventTimeout 3 ch
+
+      lift $ update vty
+        $ picForImage
+        $ string (attrForNote e)
+        $ case showNote (strOffset str + n) of
+            Left n -> n
+            Right (x, y) -> x <> "/" <> y
+
+      _ <- lift $ nextEvent ch
+
+      recur 5 (go ch)
+
     attrForNote Nothing  = defAttr `withBackColor` red `withForeColor` black
     attrForNote (Just _) = defAttr
 
@@ -280,7 +294,7 @@ main = do
        }
   vty <- mkVty cfg
 
-  flip runContT pure $ menu (opts vty) 0 vty
+  flip runContT pure $ runApp $ menu (opts vty) 0 vty
 
   shutdown vty
   where

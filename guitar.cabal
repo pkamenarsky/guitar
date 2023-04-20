@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 7c3782838e133765db45e7bce866b144bf7f8c88d8276637b4d3eef2d591e084
+-- hash: 229816b13b7cd81d1bbb4a1873f9f980995fe8adb64c0a2e2b95a9e1aa74d43e
 
 name:           guitar
 version:        0.1.0.0
@@ -27,7 +27,7 @@ source-repository head
 
 library
   exposed-modules:
-      Lib
+      SignalT
   other-modules:
       Paths_guitar
   hs-source-dirs:
