@@ -160,16 +160,45 @@ fretImage desn hln strs = vertCat $ mconcat
 
 -- Spaced repetition -----------------------------------------------------------
 
-spaced :: Show a => FilePath -> SignalT App a -> App ()
-spaced fp (SignalT m) = do
+-- https://en.wikipedia.org/wiki/Leitner_system
+ltSessionNames :: [[Int]]
+ltSessionNames =
+  [ [ 0, 2, 5, 9
+    , 1, 3, 6, 0
+    , 2, 4, 7, 1
+    , 3, 5, 8, 2
+    , 4, 6, 9, 3
+    , 5, 7, 0, 4
+    , 6, 8, 1, 5
+    , 7, 9, 2, 6
+    , 8, 0, 3, 7
+    , 9, 1, 4, 8
+    ]
+  ]
+
+data Leitner a = Leitner
+  { ltCurrent :: [a]
+  , ltSessions :: [[a]]
+  , ltRetired :: [a]
+  }
+
+leitner :: Show a => FilePath -> SignalT App a -> App ()
+leitner fp (SignalT m) = do
   (a, next) <- m
   liftIO $ print a
-  spaced fp next
+  leitner fp next
+  where
+    drawCard :: Int -> Leitner a -> IO (a, Bool -> Leitner a)
+    drawCard sNum spRep = case ltCurrent spRep of
+      [] -> undefined
+      cards -> do
+        cardNum <- randomRIO (0, length cards - 1)
+        undefined
 
 -- Apps ------------------------------------------------------------------------
 
 guessNote :: Vty -> DrawEmptyStringNotes -> Note -> App ()
-guessNote vty desn limit = quittable vty $ \ch -> spaced "" (go ch)
+guessNote vty desn limit = quittable vty $ \ch -> leitner "" (go ch)
   where
     go :: Chan -> SignalT App Int
     go ch = do
