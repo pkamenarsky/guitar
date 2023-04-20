@@ -4,9 +4,10 @@
 module Main where
 
 import Control.Concurrent (threadDelay)
-import Control.Monad.Trans.Cont
 import Control.Monad.Trans.Class (lift)
-import Control.Monad.IO.Class (MonadIO)
+import Control.Monad.Trans.Cont
+import Control.Monad.Trans.State (StateT, evalStateT, put, get)
+import Control.Monad.IO.Class (MonadIO, liftIO)
 
 import qualified Data.Aeson as A
 import Data.Either (isLeft)
@@ -20,27 +21,28 @@ import System.Timeout (timeout)
 import Graphics.Vty hiding (nextEvent, update)
 import qualified Graphics.Vty as Vty
 
-type App = ContT () IO
+type AppT m = ContT () m
+type App = AppT IO
 
-update :: Vty -> Picture -> App ()
-update vty = lift . Vty.update vty
+update :: MonadIO m => Vty -> Picture -> AppT m ()
+update vty = liftIO . Vty.update vty
 
-data Chan = Chan Vty (() -> ContT () IO Event)
+data Chan m = Chan Vty (() -> ContT () m Event)
 
-nextEventTimeout :: Int -> Chan -> App (Maybe Event)
+nextEventTimeout :: MonadIO m => Int -> Chan m -> AppT m (Maybe Event)
 nextEventTimeout secs (Chan vty k) = do
-  e <- lift $ timeout (secs * 1000000 ) $ Vty.nextEvent vty
+  e <- liftIO $ timeout (secs * 1000000 ) $ Vty.nextEvent vty
   case e of
     Just (EvKey (KChar 'q') []) -> Just <$> k ()
     Just (EvMouseDown _ _ _ _) -> do
-      _ <- lift $ Vty.nextEvent vty -- EvMouseUp
+      _ <- liftIO $ Vty.nextEvent vty -- EvMouseUp
       pure e
     e -> pure e
 
-nextEvent :: Chan -> App Event
+nextEvent :: MonadIO m => Chan m -> AppT m Event
 nextEvent ch = fromJust <$> nextEventTimeout maxBound ch
 
-quittable :: Vty -> (Chan -> App ()) -> App ()
+quittable :: MonadIO m => Vty -> (Chan m -> AppT m ()) -> AppT m ()
 quittable vty m = callCC $ \k -> m (Chan vty k)
 
 newtype Str = Str Int -- 0 = E string
@@ -152,15 +154,22 @@ fretImage desn hln strs = vertCat $ mconcat
 
 -- Spaced repetition -----------------------------------------------------------
 
-spaced :: MonadIO m => FilePath -> [a] -> m a
-spaced fp as = undefined
+spacedPersisted :: FilePath -> [a] -> (a -> App Bool) -> App ()
+spacedPersisted fp as f = do
+  n <- randomRIO (0, length as - 1)
+  undefined
+
+data SpacedState = SpacedState
 
 -- Apps ------------------------------------------------------------------------
 
-guessNote :: Vty -> DrawEmptyStringNotes -> Note -> App ()
-guessNote vty desn limit = quittable vty $ \ch -> do
+guessNote :: Vty -> DrawEmptyStringNotes -> Note -> StateT Int (ContT () IO) ()
+guessNote vty desn limit = lift $ quittable vty $ \ch -> do
   str <- randomRIO (0, 5)
   n   <- randomRIO (1, limit)
+
+  -- bla <- lift get
+  -- lift $ put (bla + 1)
 
   update vty $ picForImage $ fretImageForMark str n
 
@@ -186,7 +195,7 @@ guessNote vty desn limit = quittable vty $ \ch -> do
       | str <- [0..5]
       ]
 
-guessFret :: Vty -> DrawEmptyStringNotes -> App ()
+guessFret :: MonadIO m => Vty -> DrawEmptyStringNotes -> AppT m ()
 guessFret vty desn = quittable vty $ \ch -> do
   rstr <- randomRIO (0, 5)
   n    <- randomRIO (1, 12)
@@ -234,7 +243,7 @@ guessFret vty desn = quittable vty $ \ch -> do
         EvMouseDown _ _ _ _ -> pure e
         _ -> drawFret mode rstr n ch
 
-showNotesOnStrings :: Note -> Vty -> App ()
+showNotesOnStrings :: MonadIO m => Note -> Vty -> AppT m ()
 showNotesOnStrings n vty = quittable vty $ \ch -> do
   update vty $ picForImage $ fretImage DrawEmptyStringNotes (Just n)
     [ All Colon str
@@ -248,7 +257,7 @@ showNotesOnStrings n vty = quittable vty $ \ch -> do
     EvKey (KChar 'k') [] -> showNotesOnStrings (normalizeNote (n - 1)) vty
     _ -> showNotesOnStrings n vty
 
-menu :: [(String, App ())] -> Int -> Vty -> App ()
+menu :: MonadIO m => [(String, AppT m ())] -> Int -> Vty -> AppT m ()
 menu opts optIndex vty = quittable vty $ \ch -> do
   update vty $ picForImage $ vertCat
     [ string (attr i) opt
@@ -289,7 +298,7 @@ main = do
         , showNotesOnStrings 0 vty
         )
       , ( "Guess note"
-        , guessNote vty DontDrawEmptyStringNotes 3
+        , flip evalStateT 0 $ guessNote vty DontDrawEmptyStringNotes 3
         )
       , ( "Guess fret"
         , guessFret vty DontDrawEmptyStringNotes
